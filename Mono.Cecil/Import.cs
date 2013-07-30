@@ -28,6 +28,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using SR = System.Reflection;
 
 using Mono.Cecil.Metadata;
@@ -241,6 +242,7 @@ namespace Mono.Cecil {
 				Culture = name.CultureInfo.Name,
 				PublicKeyToken = name.GetPublicKeyToken (),
 				HashAlgorithm = (AssemblyHashAlgorithm) name.HashAlgorithm,
+                IsRetargetable = (name.Flags & SR.AssemblyNameFlags.Retargetable) == SR.AssemblyNameFlags.Retargetable
 			};
 
 			module.AssemblyReferences.Add (scope);
@@ -448,26 +450,64 @@ namespace Mono.Cecil {
 			if (TryGetAssemblyNameReference (name, out reference))
 				return reference;
 
-			reference = new AssemblyNameReference (name.Name, name.Version) {
-				Culture = name.Culture,
-				HashAlgorithm = name.HashAlgorithm,
-			};
+		    var version = name.Version;
+		    var isPCL = false;
+		    if (name.IsRetargetable && BitConverter.ToString(name.PublicKeyToken).ToLower().Replace("-", string.Empty) == "7cec85d7bea7798e")
+		    {
+		        version = new Version("4.0.0.0");
+		        isPCL = true;
+		    }
 
-			var pk_token = !name.PublicKeyToken.IsNullOrEmpty ()
-				? new byte [name.PublicKeyToken.Length]
+		    reference = new AssemblyNameReference(name.Name, version)
+		    {
+		        Culture = name.Culture,
+		        HashAlgorithm = name.HashAlgorithm,
+		        IsRetargetable = !isPCL && name.IsRetargetable
+		    };
+
+		    var token = name.PublicKeyToken;
+		    if (isPCL)
+		    {
+		        token = GetPublicKeyToken(reference);
+		    }
+
+		    var pk_token = !token.IsNullOrEmpty()
+                ? new byte[token.Length]
 				: Empty<byte>.Array;
 
 			if (pk_token.Length > 0)
-				Buffer.BlockCopy (name.PublicKeyToken, 0, pk_token, 0, pk_token.Length);
+                Buffer.BlockCopy(token, 0, pk_token, 0, pk_token.Length);
 
 			reference.PublicKeyToken = pk_token;
 
-			module.AssemblyReferences.Add (reference);
+		    var existing = module.AssemblyReferences.FirstOrDefault(a => a.FullName == reference.FullName);
+		    if (existing != null)
+		        return existing;
+
+            module.AssemblyReferences.Add (reference);
 
 			return reference;
 		}
 
-		bool TryGetAssemblyNameReference (AssemblyNameReference name_reference, out AssemblyNameReference assembly_reference)
+	    private static byte[] GetPublicKeyToken(AssemblyNameReference reference)
+	    {
+	        SR.Assembly assembly;
+
+            try
+            {
+                assembly = SR.Assembly.ReflectionOnlyLoad(reference.Name);
+            }
+            catch (Exception)
+            {
+              assembly = SR.Assembly.ReflectionOnlyLoadFrom(System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory() + "\\" + reference.Name + ".dll");
+            }
+
+	       
+	        
+	       return assembly.GetName().GetPublicKeyToken();
+	    }
+
+	    bool TryGetAssemblyNameReference (AssemblyNameReference name_reference, out AssemblyNameReference assembly_reference)
 		{
 			var references = module.AssemblyReferences;
 
